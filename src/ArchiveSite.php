@@ -115,6 +115,17 @@ final class ArchiveSite
         }
 
         // 5b. Rewrite each saved HTML page ------------------------------------
+        // Internal (same-domain, non-query) <a href> links become root-relative paths so the
+        // archive is navigable at any deploy domain (the .htaccess serves /aboutus -> index.html).
+        // External and query-string links are left absolute.
+        $linkResolver = static function (string $abs) use ($crawler): ?string {
+            if (!$crawler->inScope($abs) || !UrlMapper::isArchivablePageUrl($abs)) {
+                return null;
+            }
+            $path = parse_url($abs, PHP_URL_PATH) ?: '/';
+            return $path === '/' ? '/' : (rtrim($path, '/') ?: '/');
+        };
+
         foreach ($pageFileByUrl as $url => $rel) {
             $file = $webroot . '/' . $rel;
             $html = (string) file_get_contents($file);
@@ -124,7 +135,8 @@ final class ArchiveSite
                 fn (string $abs): ?string =>
                     isset($assetPathByUrl[$abs])
                         ? UrlMapper::relativeHref($rel, $assetPathByUrl[$abs])
-                        : null   // unknown (e.g. Google Fonts, failed) -> leave as-is
+                        : null,  // unknown (e.g. Google Fonts, failed) -> leave as-is
+                $linkResolver
             );
             $this->writeFile($file, $rewritten);
         }

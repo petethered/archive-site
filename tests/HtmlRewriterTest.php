@@ -50,6 +50,33 @@ final class HtmlRewriterTest extends TestCase
         $this->assertStringContainsString('src="__static/x/a.png"', $out);
     }
 
+    public function test_rewrites_internal_links_to_root_relative_via_link_resolver(): void
+    {
+        $html = '<html><body>'
+            . '<a href="/aboutus">About</a>'
+            . '<a href="/aboutus/#team">About team</a>'
+            . '<a href="https://external.com/x">External</a>'
+            . '<a href="#section">In-page</a>'
+            . '</body></html>';
+
+        $assetResolver = static fn (string $a): ?string => null;
+        // Simulate the orchestrator's link resolver: in-scope -> root-relative, else null.
+        $linkResolver = static function (string $abs): ?string {
+            if (!str_starts_with($abs, 'https://x.com/')) {
+                return null; // external -> leave absolute
+            }
+            $path = parse_url($abs, PHP_URL_PATH) ?: '/';
+            return $path === '/' ? '/' : (rtrim($path, '/') ?: '/');
+        };
+
+        $out = HtmlRewriter::rewrite($html, 'https://x.com/', $assetResolver, $linkResolver);
+
+        $this->assertStringContainsString('href="/aboutus"', $out);
+        $this->assertStringContainsString('href="/aboutus#team"', $out); // fragment preserved
+        $this->assertStringContainsString('href="https://external.com/x"', $out); // external untouched
+        $this->assertStringContainsString('href="#section"', $out); // in-page anchor untouched
+    }
+
     public function test_rewrites_srcset(): void
     {
         $html = '<html><body><img src="/a.png" srcset="/a.png 1x, /a2.png 2x"></body></html>';

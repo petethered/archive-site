@@ -7,11 +7,19 @@ namespace ArchiveSite;
 final class HtmlRewriter
 {
     /**
-     * Rewrite asset references (src, href, srcset, inline style url()) to local paths.
+     * Rewrite asset references (src, link href, srcset, inline style url()) to local paths.
      * $resolver receives an absolute URL and returns the replacement, or null to leave it unchanged.
+     *
+     * If $linkResolver is provided, anchor (<a href>) targets are also rewritten: it receives the
+     * resolved absolute URL and returns a replacement href (e.g. a root-relative path), or null to
+     * leave the link unchanged. Any fragment on the original href is preserved.
      */
-    public static function rewrite(string $html, string $baseUrl, callable $resolver): string
-    {
+    public static function rewrite(
+        string $html,
+        string $baseUrl,
+        callable $resolver,
+        ?callable $linkResolver = null
+    ): string {
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
         // Encode non-ASCII to numeric entities so libxml (which assumes Latin-1) parses UTF-8
@@ -40,6 +48,22 @@ final class HtmlRewriter
             $new = $map($el->getAttribute('href'));
             if ($new !== null) {
                 $el->setAttribute('href', $new);
+            }
+        }
+        if ($linkResolver !== null) {
+            foreach ($xpath->query('//a[@href]') as $el) {
+                /** @var \DOMElement $el */
+                $raw = $el->getAttribute('href');
+                $hash = strpos($raw, '#');
+                $fragment = $hash === false ? '' : substr($raw, $hash);
+                $abs = Url::resolve($baseUrl, $raw);
+                if ($abs === null) {
+                    continue; // fragment-only, mailto:, etc. -> leave as-is
+                }
+                $new = $linkResolver($abs);
+                if ($new !== null) {
+                    $el->setAttribute('href', $new . $fragment);
+                }
             }
         }
         foreach ($xpath->query('//*[@srcset]') as $el) {
