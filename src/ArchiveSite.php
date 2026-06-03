@@ -14,45 +14,71 @@ final class ArchiveSite
 
     public function run(string $folder, string $seedUrl): void
     {
+        $t0 = microtime(true);
         $folder = rtrim($folder, '/');
         $webroot = $folder . '/webroot';
         $static = $webroot . '/__static';
+
+        $crawler = new Crawler($seedUrl);
+        $this->out('archiveSite — archiving ' . $seedUrl);
+        $this->out('  output folder : ' . $folder);
+        $this->out('  scope domain  : ' . Crawler::registrableDomain((string) parse_url($seedUrl, PHP_URL_HOST)));
+        $this->out('  max pages     : ' . $this->maxPages);
+        $this->out('');
+
+        $this->out('[1/6] Scaffolding directories');
         $this->mkdir($folder);
         $this->mkdir($webroot);
         $this->mkdir($static);
+        $this->out('  created ' . $webroot . '/ and __static/');
+        $this->out('');
 
         $startedAt = gmdate('c');
         $manifest = new Manifest($seedUrl, $startedAt);
-        $crawler = new Crawler($seedUrl);
         $browser = new Browser($this->chromeBinary);
 
-        // 1. Crawl (render + discover) ----------------------------------------
-        echo "Crawling {$seedUrl} ...\n";
+        // 2. Crawl (render + discover) ----------------------------------------
+        $this->out('[2/6] Crawling & rendering pages (headless Chrome)');
         $result = $crawler->crawl(
             $seedUrl,
             $browser,
             $this->maxPages,
             function (string $url, string $reason) use ($manifest): void {
-                fwrite(STDERR, "  ! render error {$url}: {$reason}\n");
+                $this->err('      ! render error ' . $url . ': ' . $reason);
                 $manifest->addError($url, $reason);
+            },
+            function (string $event, array $d): void {
+                if ($event === 'rendering') {
+                    $this->out(sprintf('  [page %d] rendering %s …', $d['index'], $d['url']));
+                } elseif ($event === 'rendered') {
+                    $this->out(sprintf(
+                        '            ok — %s, %d new link(s), %d queued',
+                        $this->humanBytes($d['bytes']),
+                        $d['newLinks'],
+                        $d['queued']
+                    ));
+                }
             }
         );
-
+        $this->out(sprintf('  rendered %d page(s)', count($result['order'])));
         if ($result['capped']) {
-            fwrite(STDERR, "  ! max page cap ({$this->maxPages}) reached; finalizing with pages gathered\n");
+            $this->err('  ! max page cap (' . $this->maxPages . ') reached; finalizing with pages gathered');
         }
+        $this->out('');
 
-        // 2. Save rendered HTML to mapped paths -------------------------------
+        // 3. Save rendered HTML to mapped paths -------------------------------
+        $this->out('[3/6] Saving rendered HTML');
         $pageFileByUrl = [];   // normalizedUrl => webroot-relative file path
         foreach ($result['order'] as $url) {
             $rel = UrlMapper::pageUrlToPath($url);
             $pageFileByUrl[$url] = $rel;
             $this->writeFile($webroot . '/' . $rel, $result['pages'][$url]);
             $manifest->addPage($url, $rel, 'fetched');
-            echo "  page {$url} -> {$rel}\n";
+            $this->out('  ' . $url . '  ->  ' . $rel);
         }
+        $this->out('');
 
-        // 3. Collect assets from every rendered page --------------------------
+        // 4. Collect + download assets (recursive CSS) ------------------------
         // Resolve relative refs against the page's directory base (a page saved at blog/index.html
         // is served at /blog/, so "logo.png" -> /blog/logo.png, not /logo.png).
         $assetUrls = [];
@@ -62,18 +88,23 @@ final class ArchiveSite
             }
         }
         $assetUrls = array_keys($assetUrls);
+        $this->out('[4/6] Downloading assets (' . count($assetUrls) . ' found across pages)');
 
-        // 4. Download assets, recursively pulling nested CSS references -------
         $downloader = new Downloader();
         $assetPathByUrl = [];   // absoluteUrl => webroot-relative __static path
         $queue = $assetUrls;
         $seen = [];
+        $ok = 0;
+        $failed = 0;
+        $nested = 0;
+        $done = 0;
         while ($queue !== []) {
             $url = array_shift($queue);
             if (isset($seen[$url])) {
                 continue;
             }
             $seen[$url] = true;
+            $done++;
 
             $rel = UrlMapper::assetUrlToStaticPath($url);
             $host = parse_url($url, PHP_URL_HOST) ?? 'unknown-host';
@@ -81,7 +112,8 @@ final class ArchiveSite
             // Defense-in-depth: never write outside __static/ even if mapping produced a stray path.
             if (!str_starts_with($rel, '__static/') || str_contains('/' . $rel, '/../')) {
                 $manifest->addError($url, 'unsafe-path');
-                fwrite(STDERR, "  ! unsafe asset path skipped {$url}\n");
+                $this->err(sprintf('  [%d] SKIP (unsafe path) %s', $done, $url));
+                $failed++;
                 continue;
             }
             $dest = $webroot . '/' . $rel;
@@ -89,23 +121,42 @@ final class ArchiveSite
             if ($downloader->download($url, $dest)) {
                 $assetPathByUrl[$url] = $rel;
                 $manifest->addAsset($url, $host, $rel, 'downloaded');
+                $ok++;
+                $this->out(sprintf(
+                    '  [%d] ok  %s  (%s)',
+                    $done,
+                    $url,
+                    $this->humanBytes((int) @filesize($dest))
+                ));
 
                 // If CSS, scan for nested references and enqueue them.
                 if ($this->looksLikeCss($url, $dest)) {
                     $css = (string) file_get_contents($dest);
-                    foreach (CssRewriter::extractUrls($css, $url) as $nested) {
-                        if (!isset($seen[$nested])) {
-                            $queue[] = $nested;
+                    foreach (CssRewriter::extractUrls($css, $url) as $nestedUrl) {
+                        if (!isset($seen[$nestedUrl])) {
+                            $queue[] = $nestedUrl;
+                            $nested++;
                         }
                     }
                 }
             } else {
                 $manifest->addError($url, 'download-failed');
-                fwrite(STDERR, "  ! download failed {$url}\n");
+                $this->err(sprintf('  [%d] FAIL %s', $done, $url));
+                $failed++;
             }
         }
+        $this->out(sprintf(
+            '  downloaded %d ok, %d failed (%d nested CSS asset(s) discovered)',
+            $ok,
+            $failed,
+            $nested
+        ));
+        $this->out('');
 
-        // 5a. Rewrite downloaded CSS files to local relative paths ------------
+        // 5. Rewrite CSS + HTML ----------------------------------------------
+        $this->out('[5/6] Rewriting references to local paths');
+
+        $cssFiles = 0;
         foreach ($assetPathByUrl as $url => $rel) {
             $dest = $webroot . '/' . $rel;
             if (!$this->looksLikeCss($url, $dest)) {
@@ -121,9 +172,10 @@ final class ArchiveSite
                         : null
             );
             $this->writeFile($dest, $rewritten);
+            $cssFiles++;
         }
+        $this->out('  rewrote ' . $cssFiles . ' CSS file(s)');
 
-        // 5b. Rewrite each saved HTML page ------------------------------------
         // Internal (same-domain, non-query) <a href> links become root-relative paths so the
         // archive is navigable at any deploy domain (the .htaccess serves /aboutus -> index.html).
         // External and query-string links are left absolute.
@@ -151,14 +203,47 @@ final class ArchiveSite
                 $linkResolver
             );
             $this->writeFile($file, $rewritten);
+            $this->out('  rewrote ' . $rel);
         }
+        $this->out('');
 
         // 6. .htaccess + manifest --------------------------------------------
+        $this->out('[6/6] Writing .htaccess and archive.json');
         HtaccessWriter::write($webroot);
         $manifest->finish(gmdate('c'));
         $manifest->write($folder . '/archive.json');
+        $this->out('  wrote ' . $webroot . '/.htaccess');
+        $this->out('  wrote ' . $folder . '/archive.json');
+        $this->out('');
 
-        echo "Done. Archive written to {$folder}\n";
+        $this->out(sprintf('Done in %.1fs.', microtime(true) - $t0));
+        $this->out(sprintf('  pages: %d   assets: %d ok / %d failed', count($pageFileByUrl), $ok, $failed));
+        $this->out('  deploy: ' . $webroot . '/   (open index.html or serve with Apache)');
+    }
+
+    private function out(string $line): void
+    {
+        fwrite(STDOUT, $line . "\n");
+    }
+
+    private function err(string $line): void
+    {
+        fwrite(STDERR, $line . "\n");
+    }
+
+    private function humanBytes(int $bytes): string
+    {
+        if ($bytes < 1024) {
+            return $bytes . ' B';
+        }
+        $units = ['KB', 'MB', 'GB'];
+        $value = $bytes / 1024;
+        $i = 0;
+        while ($value >= 1024 && $i < count($units) - 1) {
+            $value /= 1024;
+            $i++;
+        }
+        return sprintf('%.1f %s', $value, $units[$i]);
     }
 
     private function looksLikeCss(string $url, string $path): bool

@@ -84,13 +84,21 @@ final class Crawler
      * BFS from the seed using the Browser. Returns
      * [ 'pages' => [normUrl => html], 'order' => [normUrl,...], 'capped' => bool ].
      * Records render failures via $onError(url, reason).
+     *
+     * $onProgress, if given, is called for live feedback:
+     *   $onProgress('rendering', ['url' => $url, 'index' => N, 'queued' => Q])  before each render
+     *   $onProgress('rendered',  ['url' => $url, 'index' => N, 'bytes' => B,
+     *                             'newLinks' => L, 'queued' => Q])              after a successful render
      */
     public function crawl(
         string $seedUrl,
         Browser $browser,
         int $maxPages,
-        callable $onError
+        callable $onError,
+        ?callable $onProgress = null
     ): array {
+        $progress = $onProgress ?? static function (): void {
+        };
         $start = $this->normalizePageUrl(Url::stripFragment($seedUrl));
         $queue = [$start];
         $visited = [];
@@ -104,6 +112,9 @@ final class Crawler
             }
             $visited[$url] = true;
 
+            $index = count($pages) + 1;
+            $progress('rendering', ['url' => $url, 'index' => $index, 'queued' => count($queue)]);
+
             try {
                 $html = $browser->render($url);
             } catch (\Throwable $e) {
@@ -115,11 +126,21 @@ final class Crawler
             $order[] = $url;
 
             // Resolve relative links against the page's directory base (/blog/, not /blog).
+            $newLinks = 0;
             foreach ($this->extractLinks($html, UrlMapper::pageBaseUrl($url)) as $link) {
                 if (!isset($visited[$link])) {
                     $queue[] = $link;
+                    $newLinks++;
                 }
             }
+
+            $progress('rendered', [
+                'url' => $url,
+                'index' => $index,
+                'bytes' => strlen($html),
+                'newLinks' => $newLinks,
+                'queued' => count($queue),
+            ]);
         }
 
         return ['pages' => $pages, 'order' => $order, 'capped' => $queue !== []];
