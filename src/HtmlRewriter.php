@@ -14,7 +14,9 @@ final class HtmlRewriter
     {
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
-        $dom->loadHTML('<?xml encoding="UTF-8">' . $html, LIBXML_NOERROR);
+        // Encode non-ASCII to numeric entities so libxml (which assumes Latin-1) parses UTF-8
+        // intact; decoded back after save. This avoids injecting an xml processing instruction.
+        $dom->loadHTML(self::encodeUtf8($html), LIBXML_NOERROR);
         libxml_clear_errors();
         $xpath = new \DOMXPath($dom);
 
@@ -53,7 +55,19 @@ final class HtmlRewriter
         }
 
         $body = $dom->saveHTML();
-        return $body === false ? $html : $body;
+        return $body === false ? $html : self::decodeUtf8($body);
+    }
+
+    private const ENTITY_MAP = [0x80, 0x10FFFF, 0, 0x10FFFF];
+
+    private static function encodeUtf8(string $html): string
+    {
+        return mb_encode_numericentity($html, self::ENTITY_MAP, 'UTF-8');
+    }
+
+    private static function decodeUtf8(string $html): string
+    {
+        return mb_decode_numericentity($html, self::ENTITY_MAP, 'UTF-8');
     }
 
     private static function rewriteSrcset(string $srcset, callable $map): string

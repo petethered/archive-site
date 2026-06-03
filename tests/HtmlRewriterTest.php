@@ -35,6 +35,21 @@ final class HtmlRewriterTest extends TestCase
         $this->assertStringContainsString('https://fonts.googleapis.com/css?family=Roboto', $out);
     }
 
+    public function test_no_xml_pi_leak_and_utf8_content_preserved(): void
+    {
+        $html = '<!DOCTYPE html><html><head></head><body><p>Café &amp; thé</p>'
+            . '<img src="/a.png"></body></html>';
+        $out = HtmlRewriter::rewrite($html, 'https://x.com/', static fn (string $a): string => '__static/x/a.png');
+
+        // No stray <?xml ...> processing instruction in the output.
+        $this->assertStringNotContainsString('<?xml', $out);
+        // Content is preserved (UTF-8 not corrupted); accents may be HTML entities, which
+        // decode back to the original text and render identically.
+        $decoded = html_entity_decode($out, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $this->assertStringContainsString('Café & thé', $decoded);
+        $this->assertStringContainsString('src="__static/x/a.png"', $out);
+    }
+
     public function test_rewrites_srcset(): void
     {
         $html = '<html><body><img src="/a.png" srcset="/a.png 1x, /a2.png 2x"></body></html>';
