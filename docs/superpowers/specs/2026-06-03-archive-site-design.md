@@ -26,8 +26,16 @@ php archiveSite.php <folder> <url>
 ## Confirmed Requirements & Decisions
 
 1. **Rendering:** Sites are JavaScript-rendered. The tool drives **headless
-   Chrome** via the `chrome-php/chrome` Composer library (DevTools protocol).
-   Needs a Chrome/Chromium binary installed.
+   Chrome by shelling out to the Chrome binary** per page
+   (`--headless=new --no-sandbox --disable-gpu --user-data-dir=<temp>
+   --window-size=1280,20000 --virtual-time-budget=8000
+   --run-all-compositor-stages-before-draw --dump-dom <url>`), capturing the
+   rendered DOM from stdout. No Composer/browser library dependency. A tall
+   window height puts most lazy-loaded (IntersectionObserver) content "in
+   viewport" so it loads without real scrolling; `--virtual-time-budget` lets
+   JS/network settle. Needs a Chrome/Chromium binary installed. (Chosen over the
+   `chrome-php` DevTools library: simpler, fewer moving parts, and the exact
+   sandbox-compatible flag set is known-good.)
 2. **Crawl scope:** Same **registrable domain** (follow `example.com` and
    its subdomains like `www.`, `blog.`; do not follow external sites). Static
    assets are still downloaded from wherever they are hosted (e.g.
@@ -80,9 +88,9 @@ interface.
 
 - **`ArchiveSite` (orchestrator)** — parses args, creates the directory
   scaffold, runs the pipeline, writes the manifest.
-- **`Browser`** — wraps `chrome-php/chrome`. Navigates to a URL, waits for
-  network idle, scrolls to trigger lazy-loading, returns fully rendered HTML.
-  Owns the Chrome lifecycle (launch/reuse/teardown).
+- **`Browser`** — shells out to the Chrome binary (`--dump-dom` with the
+  sandbox-compatible flag set above) and returns the rendered HTML from stdout.
+  Resolves the Chrome binary path (auto-detect with override).
 - **`Crawler`** — BFS over same-registrable-domain pages. Maintains the
   visited-set and max-page cap, extracts internal links, normalizes/dedupes
   URLs, skips query-string pages. Produces the page list.
@@ -101,8 +109,10 @@ interface.
 - **`HtaccessWriter`** — writes the single root `.htaccess`.
 - **`Manifest`** — the JSON state/record file.
 
-**Dependencies:** `chrome-php/chrome` (rendering), `symfony/dom-crawler` +
-native `DOMDocument` (parsing/rewriting), cURL (downloads).
+**Dependencies:** none beyond the PHP runtime and a Chrome/Chromium binary.
+Native `DOMDocument`/`DOMXPath` (parsing/rewriting), `ext-curl` (downloads),
+`proc_open` (Chrome shell-out). No third-party Composer packages required at
+runtime (PHPUnit is dev-only).
 
 ## Pipeline (Run Order)
 

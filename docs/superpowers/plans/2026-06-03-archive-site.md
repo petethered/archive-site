@@ -4,9 +4,9 @@
 
 **Goal:** Build a PHP CLI tool (`php archiveSite.php <folder> <url>`) that crawls a JavaScript-rendered website with headless Chrome, downloads its pages and static assets, and produces a self-contained, deployable static HTML site that renders offline except for Google Web Fonts.
 
-**Architecture:** A single CLI entry point orchestrates focused, single-responsibility classes under `src/` (PSR-4, namespace `ArchiveSite\`). Pure-logic units (URL handling, path mapping, link/asset extraction, HTML/CSS rewriting, htaccess, manifest) are unit-tested offline. Network/Chrome units (`Browser`, `Downloader`, orchestrator) are integration-tested — `Downloader` via `file://` fixtures, `Browser`/orchestrator manually against a real site after installing Chrome.
+**Architecture:** A single CLI entry point orchestrates focused, single-responsibility classes under `src/` (PSR-4, namespace `ArchiveSite\`). Pure-logic units (URL handling, path mapping, link/asset extraction, HTML/CSS rewriting, htaccess, manifest) are unit-tested offline. Network/Chrome units (`Browser`, `Downloader`, orchestrator) are integration-tested — `Downloader` via `file://` fixtures, `Browser`/orchestrator against a real site using the installed Chrome binary.
 
-**Tech Stack:** PHP 8.4, Composer (PSR-4), `chrome-php/chrome` (headless Chrome over DevTools), native `ext-dom` (`DOMDocument`/`DOMXPath`) for parsing & rewriting, `ext-curl` for downloads, PHPUnit 10 for tests.
+**Tech Stack:** PHP 8.4, Composer (PSR-4 autoload only — no runtime packages), headless Chrome driven by **shelling out to the Chrome binary** (`--dump-dom` + sandbox-compatible flags) via `proc_open`, native `ext-dom` (`DOMDocument`/`DOMXPath`) for parsing & rewriting, `ext-curl` for downloads, PHPUnit 10 for tests.
 
 > **Note on a spec refinement:** The spec mentioned `symfony/dom-crawler`; this plan uses native `DOMDocument`/`DOMXPath` instead (fewer dependencies, same capability). Asset-collision handling (spec §4) is made deterministic: any asset URL carrying a query string gets an 8-char hash of the full URL injected before its extension, so differing query versions never collide and the mapping is pure (URL → path with no global state). Clean (query-less) URLs keep clean filenames.
 
@@ -57,8 +57,7 @@ Google Fonts hosts (constant reused everywhere): `fonts.googleapis.com`, `fonts.
         "php": ">=8.1",
         "ext-dom": "*",
         "ext-curl": "*",
-        "ext-json": "*",
-        "chrome-php/chrome": "^1.8"
+        "ext-json": "*"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.5"
@@ -1506,14 +1505,67 @@ git commit -m "Add Downloader: fetch URL to disk via cURL"
 
 ---
 
-## Task 11: `Browser` — headless Chrome wrapper (integration)
+## Task 11: `Browser` — headless Chrome shell-out (integration)
 
-No automated test (requires a Chrome binary, not present in CI/dev here). Verified manually in Task 14.
+Shells out to the Chrome binary with `--dump-dom`. The flag set and binary
+detection are unit-tested (pure, no Chrome); the actual render is verified with a
+real binary in this step and end-to-end in Task 14.
 
 **Files:**
 - Create: `src/Browser.php`
+- Test: `tests/BrowserTest.php`
 
-- [ ] **Step 1: Write the implementation** — `src/Browser.php`
+> **Sandbox-compatible flags (known-good on this machine):**
+> `--headless=new --no-sandbox --disable-gpu --user-data-dir=<freshTemp> --window-size=1280,20000 --virtual-time-budget=8000 --run-all-compositor-stages-before-draw --dump-dom <url>`.
+> The tall window puts most IntersectionObserver lazy content "in viewport" so it
+> loads without scrolling; `--virtual-time-budget` lets JS/network settle.
+
+- [ ] **Step 1: Write the failing test** — `tests/BrowserTest.php`
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace ArchiveSite\Tests;
+
+use ArchiveSite\Browser;
+use PHPUnit\Framework\TestCase;
+
+final class BrowserTest extends TestCase
+{
+    public function test_builds_command_with_required_flags(): void
+    {
+        $cmd = Browser::buildArgs('/path/to/chrome', 'https://x.com/', '/tmp/profileXYZ');
+
+        $this->assertSame('/path/to/chrome', $cmd[0]);
+        $this->assertContains('--headless=new', $cmd);
+        $this->assertContains('--no-sandbox', $cmd);
+        $this->assertContains('--disable-gpu', $cmd);
+        $this->assertContains('--user-data-dir=/tmp/profileXYZ', $cmd);
+        $this->assertContains('--dump-dom', $cmd);
+        $this->assertContains('https://x.com/', $cmd);
+        // URL must be the last argument
+        $this->assertSame('https://x.com/', $cmd[array_key_last($cmd)]);
+    }
+
+    public function test_detects_known_binary_paths(): void
+    {
+        $existing = tempnam(sys_get_temp_dir(), 'chromebin');
+        chmod($existing, 0755);
+        $this->assertSame($existing, Browser::detectBinary([$existing, '/nope/here']));
+        $this->assertNull(Browser::detectBinary(['/nope/a', '/nope/b']));
+        unlink($existing);
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `vendor/bin/phpunit tests/BrowserTest.php`
+Expected: FAIL ("Class ArchiveSite\Browser not found").
+
+- [ ] **Step 3: Write minimal implementation** — `src/Browser.php`
 
 ```php
 <?php
@@ -1522,105 +1574,135 @@ declare(strict_types=1);
 
 namespace ArchiveSite;
 
-use HeadlessChromium\Browser as ChromeBrowser;
-use HeadlessChromium\BrowserFactory;
-
 final class Browser
 {
-    private ?ChromeBrowser $browser = null;
+    public const DEFAULT_BINARIES = [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+    ];
+
+    private string $binary;
 
     public function __construct(
-        private readonly ?string $chromeBinary = null,
-        private readonly int $pageTimeoutMs = 30000,
+        ?string $chromeBinary = null,
+        private readonly int $virtualTimeBudgetMs = 8000,
+        private readonly int $processTimeoutSeconds = 60,
     ) {
-    }
-
-    /** Render a URL with JS executed and lazy content triggered; return the final HTML. */
-    public function render(string $url): string
-    {
-        $browser = $this->browser();
-        $page = $browser->createPage();
-        try {
-            $page->navigate($url)->waitForNavigation();
-
-            // Trigger lazy-loading: scroll to the bottom in steps, then back to top.
-            $page->evaluate(<<<'JS'
-                (async () => {
-                    await new Promise((resolve) => {
-                        let y = 0;
-                        const step = () => {
-                            window.scrollBy(0, window.innerHeight);
-                            y += window.innerHeight;
-                            if (y < document.body.scrollHeight && y < 50000) {
-                                setTimeout(step, 150);
-                            } else {
-                                window.scrollTo(0, 0);
-                                resolve();
-                            }
-                        };
-                        step();
-                    });
-                })()
-            JS)->waitForResponse();
-
-            return $page->getHtml();
-        } finally {
-            $page->close();
+        $resolved = $chromeBinary ?? self::detectBinary(self::DEFAULT_BINARIES);
+        if ($resolved === null) {
+            throw new \RuntimeException(
+                "No Chrome/Chromium binary found. See chrome_instructions.md."
+            );
         }
+        $this->binary = $resolved;
     }
 
-    public function close(): void
+    /** @param string[] $candidates @return string|null first executable candidate */
+    public static function detectBinary(array $candidates): ?string
     {
-        $this->browser?->close();
-        $this->browser = null;
-    }
-
-    private function browser(): ChromeBrowser
-    {
-        if ($this->browser === null) {
-            $factory = new BrowserFactory($this->chromeBinary ?? $this->detectBinary());
-            $this->browser = $factory->createBrowser([
-                'headless' => true,
-                'noSandbox' => true,
-                'windowSize' => [1280, 1696],
-                'connectionDelay' => 0.1,
-            ]);
-        }
-        return $this->browser;
-    }
-
-    private function detectBinary(): string
-    {
-        $candidates = [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-        ];
         foreach ($candidates as $c) {
-            if (is_executable($c)) {
+            if (is_file($c) && is_executable($c)) {
                 return $c;
             }
         }
-        // Fall back to BrowserFactory default ("chrome"); will throw if absent.
-        return 'chrome';
+        return null;
+    }
+
+    /** @return string[] argv for proc_open (no shell quoting needed). */
+    public static function buildArgs(string $binary, string $url, string $userDataDir): array
+    {
+        return [
+            $binary,
+            '--headless=new',
+            '--no-sandbox',
+            '--disable-gpu',
+            '--user-data-dir=' . $userDataDir,
+            '--window-size=1280,20000',
+            '--virtual-time-budget=8000',
+            '--run-all-compositor-stages-before-draw',
+            '--dump-dom',
+            $url,
+        ];
+    }
+
+    /** Render a URL with headless Chrome and return the rendered DOM HTML. */
+    public function render(string $url): string
+    {
+        $profile = sys_get_temp_dir() . '/chrome-archive-' . bin2hex(random_bytes(6));
+        if (!mkdir($profile, 0700, true) && !is_dir($profile)) {
+            throw new \RuntimeException("Cannot create Chrome profile dir: {$profile}");
+        }
+
+        $args = self::buildArgs($this->binary, $url, $profile);
+        // Inject the configured virtual-time-budget (override the default in buildArgs).
+        foreach ($args as $i => $a) {
+            if (str_starts_with($a, '--virtual-time-budget=')) {
+                $args[$i] = '--virtual-time-budget=' . $this->virtualTimeBudgetMs;
+            }
+        }
+
+        $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = proc_open($args, $descriptors, $pipes);
+        if (!is_resource($proc)) {
+            $this->rmrf($profile);
+            throw new \RuntimeException("Failed to launch Chrome: {$this->binary}");
+        }
+
+        stream_set_blocking($pipes[1], true);
+        $html = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+        $this->rmrf($profile);
+
+        if ($html === false || trim($html) === '') {
+            throw new \RuntimeException("Chrome produced no output for {$url} (exit {$exit}).");
+        }
+        return $html;
+    }
+
+    private function rmrf(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($items as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($dir);
     }
 }
 ```
 
-> **Note:** `chrome-php/chrome` exposes `BrowserFactory` and `HeadlessChromium\Browser`. The exact method to await network settling (`waitForResponse()` / `waitUntilContainsElement()` / a fixed `usleep`) may need a small adjustment against the installed library version during Task 14; the scroll-then-read approach is the contract. If a site needs more settle time, add a short `$page->evaluate('...')` delay.
+> **Note:** `buildArgs` hard-codes `--virtual-time-budget=8000` for a clean,
+> testable default; `render()` overwrites it with the constructor value so the
+> budget stays configurable without complicating the tested pure method.
 
-- [ ] **Step 2: Lint the file loads (no Chrome needed)**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run: `php -l src/Browser.php`
-Expected: `No syntax errors detected`.
+Run: `vendor/bin/phpunit tests/BrowserTest.php`
+Expected: PASS (2 tests).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Real render smoke check (Chrome binary required)**
+
+Run:
+```bash
+php -r 'require "vendor/autoload.php"; echo substr((new ArchiveSite\Browser())->render("https://example.com"), 0, 120), "\n";'
+```
+Expected: prints the start of `<!DOCTYPE html>...` for example.com. (Ignore sandbox noise lines on stderr.)
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/Browser.php
-git commit -m "Add Browser: headless Chrome render wrapper"
+git add src/Browser.php tests/BrowserTest.php
+git commit -m "Add Browser: headless Chrome shell-out renderer"
 ```
 
 ---
@@ -1743,7 +1825,6 @@ final class ArchiveSite
                 $manifest->addError($url, $reason);
             }
         );
-        $browser->close();
 
         if ($result['capped']) {
             fwrite(STDERR, "  ! max page cap ({$this->maxPages}) reached; finalizing with pages gathered\n");
@@ -1974,11 +2055,37 @@ Headless servers may also need font and library packages:
 sudo apt-get install -y fonts-liberation libnss3 libatk-bridge2.0-0 libgbm1 libasound2
 ```
 
+## How archiveSite launches Chrome
+
+The tool shells out to the Chrome binary once per page and reads the rendered
+DOM from stdout. It applies these flags automatically (you don't pass them):
+
+```
+--headless=new --no-sandbox --disable-gpu --user-data-dir=<fresh temp dir>
+--window-size=1280,20000 --virtual-time-budget=8000
+--run-all-compositor-stages-before-draw --dump-dom <url>
+```
+
+`--no-sandbox` is required when Chrome runs nested inside another sandbox
+(e.g. CI or a restricted launch context); the enclosing sandbox stays the
+enforcing boundary. The tall window height makes most lazy-loaded
+(IntersectionObserver) content load without scrolling; `--virtual-time-budget`
+gives JS/network time to settle.
+
 ## Telling archiveSite where Chrome is
 
-Auto-detection covers the common paths. If your binary lives elsewhere, set it
-when constructing `ArchiveSite`/`Browser` (the `chromeBinary` constructor
-argument), or place/symlink the binary at one of the detected paths.
+Auto-detection checks these paths in order:
+
+```
+/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+/usr/bin/google-chrome
+/usr/bin/google-chrome-stable
+/usr/bin/chromium
+/usr/bin/chromium-browser
+```
+
+If your binary lives elsewhere, pass it as the `chromeBinary` constructor
+argument to `ArchiveSite`/`Browser`, or symlink it onto one of these paths.
 ````
 
 - [ ] **Step 2: Write `README.md`**
@@ -2093,14 +2200,14 @@ git commit -m "Add Chrome install instructions and README"
 
 ## Self-Review Notes (author checklist — already applied)
 
-- **Spec coverage:** scaffold/folders (Task 13), JS render via chrome-php (Task 11),
+- **Spec coverage:** scaffold/folders (Task 13), JS render via Chrome CLI shell-out (Task 11),
   crawl same-domain + cap + loop protection (Tasks 4, 12), JSON manifest (Task 9),
   page→`index.html` mapping incl. `.html` + trailing-slash + query-skip (Task 3),
   single-root walk-up `.htaccess` (Task 8), `__static/<host>` downloads incl.
   recursive CSS (Tasks 5, 6, 13), HTML/CSS rewriting to local relative paths
   (Tasks 6, 7, 13), Google Fonts left remote (Tasks 5, 6, 7), `chrome_instructions.md`
   (Task 14). All covered.
-- **Type consistency:** `Browser::render()`, `Crawler::crawl()` returning
+- **Type consistency:** `Browser::render()` / `Browser::buildArgs()` / `Browser::detectBinary()`, `Crawler::crawl()` returning
   `['pages'=>..., 'order'=>..., 'capped'=>...]`, `UrlMapper` static signatures,
   `Manifest` add* methods, and resolver closures returning `?string` are used
   consistently across Tasks 3–13.
