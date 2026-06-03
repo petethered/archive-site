@@ -57,7 +57,12 @@ php archiveSite.php <folder> <url>
      from Google at render time. Everything else is localized.
 5. **HTML rewriting:** Asset references are rewritten to **relative** paths from
    each file to `__static/`, so the archive works regardless of the domain it is
-   later deployed under. Google Fonts URLs are left untouched.
+   later deployed under. Google Fonts URLs are left untouched. Internal
+   navigation links (`<a href>` to the same registrable domain, non-query) are
+   rewritten to **root-relative** paths (e.g. `/aboutus`), preserving any
+   fragment, so the archive is click-through navigable at any deploy domain (the
+   `.htaccess` serves `/aboutus` → `/aboutus/index.html`). Links to external
+   domains and to query-string pages are left absolute.
 6. **`.htaccess`:** A **single root** `.htaccess` using `mod_rewrite`. Real
    files/dirs are served as-is. On a miss, it performs an internal rewrite (URL
    unchanged in the browser) walking **up** the path to the nearest ancestor
