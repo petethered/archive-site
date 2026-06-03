@@ -79,4 +79,48 @@ final class Crawler
         }
         return array_keys($found);
     }
+
+    /**
+     * BFS from the seed using the Browser. Returns
+     * [ 'pages' => [normUrl => html], 'order' => [normUrl,...], 'capped' => bool ].
+     * Records render failures via $onError(url, reason).
+     */
+    public function crawl(
+        string $seedUrl,
+        Browser $browser,
+        int $maxPages,
+        callable $onError
+    ): array {
+        $start = $this->normalizePageUrl(Url::stripFragment($seedUrl));
+        $queue = [$start];
+        $visited = [];
+        $pages = [];
+        $order = [];
+
+        while ($queue !== [] && count($pages) < $maxPages) {
+            $url = array_shift($queue);
+            if (isset($visited[$url])) {
+                continue;
+            }
+            $visited[$url] = true;
+
+            try {
+                $html = $browser->render($url);
+            } catch (\Throwable $e) {
+                $onError($url, 'render-failed: ' . $e->getMessage());
+                continue;
+            }
+
+            $pages[$url] = $html;
+            $order[] = $url;
+
+            foreach ($this->extractLinks($html, $url) as $link) {
+                if (!isset($visited[$link])) {
+                    $queue[] = $link;
+                }
+            }
+        }
+
+        return ['pages' => $pages, 'order' => $order, 'capped' => $queue !== []];
+    }
 }
