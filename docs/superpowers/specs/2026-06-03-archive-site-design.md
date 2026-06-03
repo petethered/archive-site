@@ -146,24 +146,29 @@ RewriteCond %{REQUEST_FILENAME} -f [OR]
 RewriteCond %{REQUEST_FILENAME} -d
 RewriteRule ^ - [L]
 
-# 2. Current path has an index.html -> serve it (internal rewrite, URL unchanged)
+# 2. Serve the nearest existing ancestor's index.html. One rule per ancestor depth
+#    (generated 1..15), each stripping one more trailing segment; first match wins.
 RewriteCond %{DOCUMENT_ROOT}/$1/index.html -f
-RewriteRule ^(.+?)/?[^/]*$ /$1/index.html [L]
+RewriteRule ^(.+)/[^/]+/?$ /$1/index.html [L]
+RewriteCond %{DOCUMENT_ROOT}/$1/index.html -f
+RewriteRule ^(.+)/[^/]+/[^/]+/?$ /$1/index.html [L]
+#    ... through depth 15 ...
 
-# 3. No index.html here -> strip last segment and re-loop
-RewriteRule ^(.+)/[^/]+/?$ /$1 [N]
-
-# 4. Fell through to root -> serve root index.html
+# 3. No ancestor matched -> serve the root index.html
 RewriteRule ^ /index.html [L]
 ```
 
-Behavior:
-- `/about/asdfasdfasd` → `/about/index.html`
-- `/about/team/xyz` (no `/about/team/index.html`) → climbs to `/about/index.html`
-- Total miss → `/index.html`
+Behavior (verified against real Apache 2.4 with `mod_rewrite` + `AllowOverride All`):
+- `/about/asdfasdfasd` → `/about/index.html` (200)
+- `/about/team/deeper/xyz` (no `/about/team/…`) → climbs to `/about/index.html` (200)
+- Total miss (`/zzz/yyy`) → `/index.html` (200)
 
-The exact rewrite behavior will be verified against a real Apache instance during
-implementation (this is the one fiddly part).
+**Note:** the original single-rule `[N]` (restart-and-strip) design was replaced after
+real-Apache testing: in `.htaccess` context the `[N]` flag re-prefixes `RewriteBase`
+each restart, growing the URI until Apache aborts with a 500. The loop-free,
+one-rule-per-depth form above avoids that. A real directory path like `/about` is
+first handled by `mod_dir`'s `DirectorySlash` (a 301 to `/about/`), which then serves
+`/about/index.html` — so internal links use root-relative `/about` and resolve in one redirect.
 
 ## `archive.json` Manifest
 

@@ -26,12 +26,34 @@ final class UrlMapper
         return $path . '/index.html';
     }
 
+    /**
+     * Resolution base for relative references on a page. A page mapped to `blog/index.html`
+     * is served at `/blog/`, so relative refs must resolve against the directory (with trailing
+     * slash), not the slash-stripped page URL. Returns e.g. `https://site.com/blog/`.
+     */
+    public static function pageBaseUrl(string $pageUrl): string
+    {
+        $parts = parse_url($pageUrl);
+        $scheme = $parts['scheme'] ?? 'https';
+        $host = $parts['host'] ?? '';
+        $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+        $rel = self::pageUrlToPath($pageUrl);
+        $dir = trim(str_replace('\\', '/', dirname($rel)), '/');
+        $base = $scheme . '://' . $host . $port . '/';
+        if ($dir !== '' && $dir !== '.') {
+            $base .= $dir . '/';
+        }
+        return $base;
+    }
+
     /** Map an asset URL to a webroot-relative path under __static/<host>/. */
     public static function assetUrlToStaticPath(string $url): string
     {
         $parts = parse_url($url);
         $host = $parts['host'] ?? 'unknown-host';
-        $path = ltrim($parts['path'] ?? '', '/');
+        // Collapse "." and ".." segments so a malicious/sloppy URL cannot escape __static/<host>/.
+        $path = self::collapseDotSegments($parts['path'] ?? '');
+        $path = ltrim($path, '/');
         if ($path === '' || str_ends_with($path, '/')) {
             $path .= 'index';
         }
@@ -59,5 +81,31 @@ final class UrlMapper
         }
         $depth = count(explode('/', $fromDir));
         return str_repeat('../', $depth) . $toTarget;
+    }
+
+    /** Collapse "." and ".." segments in a URL path; ".." can never rise above the root. */
+    private static function collapseDotSegments(string $path): string
+    {
+        $leadingSlash = str_starts_with($path, '/');
+        $trailingSlash = str_ends_with($path, '/') && $path !== '';
+        $out = [];
+        foreach (explode('/', $path) as $seg) {
+            if ($seg === '' || $seg === '.') {
+                continue;
+            }
+            if ($seg === '..') {
+                array_pop($out);
+                continue;
+            }
+            $out[] = $seg;
+        }
+        $result = implode('/', $out);
+        if ($leadingSlash) {
+            $result = '/' . $result;
+        }
+        if ($trailingSlash && !str_ends_with($result, '/')) {
+            $result .= '/';
+        }
+        return $result;
     }
 }

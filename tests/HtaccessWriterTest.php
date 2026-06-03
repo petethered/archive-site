@@ -14,8 +14,11 @@ final class HtaccessWriterTest extends TestCase
         $c = HtaccessWriter::contents();
         $this->assertStringContainsString('RewriteEngine On', $c);
         $this->assertStringContainsString('%{DOCUMENT_ROOT}/$1/index.html -f', $c);
-        $this->assertStringContainsString('[N]', $c);
-        $this->assertStringContainsString('/index.html', $c);
+        // Loop-free walk-up: one strip-rule per ancestor depth (no [N] restart, which loops in
+        // .htaccess context), ending in a root index.html fallback.
+        $this->assertStringNotContainsString('[N]', $c);
+        $this->assertStringContainsString('RewriteRule ^(.+)/[^/]+/?$ /$1/index.html [L]', $c);
+        $this->assertStringContainsString('RewriteRule ^ /index.html [L]', $c);
     }
 
     public function test_write_creates_file_in_webroot(): void

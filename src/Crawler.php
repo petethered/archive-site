@@ -114,7 +114,8 @@ final class Crawler
             $pages[$url] = $html;
             $order[] = $url;
 
-            foreach ($this->extractLinks($html, $url) as $link) {
+            // Resolve relative links against the page's directory base (/blog/, not /blog).
+            foreach ($this->extractLinks($html, UrlMapper::pageBaseUrl($url)) as $link) {
                 if (!isset($visited[$link])) {
                     $queue[] = $link;
                 }

@@ -53,9 +53,11 @@ final class ArchiveSite
         }
 
         // 3. Collect assets from every rendered page --------------------------
+        // Resolve relative refs against the page's directory base (a page saved at blog/index.html
+        // is served at /blog/, so "logo.png" -> /blog/logo.png, not /logo.png).
         $assetUrls = [];
         foreach ($result['pages'] as $url => $html) {
-            foreach (AssetCollector::collect($html, $url) as $a) {
+            foreach (AssetCollector::collect($html, UrlMapper::pageBaseUrl($url)) as $a) {
                 $assetUrls[$a] = true;
             }
         }
@@ -74,8 +76,15 @@ final class ArchiveSite
             $seen[$url] = true;
 
             $rel = UrlMapper::assetUrlToStaticPath($url);
-            $dest = $webroot . '/' . $rel;
             $host = parse_url($url, PHP_URL_HOST) ?? 'unknown-host';
+
+            // Defense-in-depth: never write outside __static/ even if mapping produced a stray path.
+            if (!str_starts_with($rel, '__static/') || str_contains('/' . $rel, '/../')) {
+                $manifest->addError($url, 'unsafe-path');
+                fwrite(STDERR, "  ! unsafe asset path skipped {$url}\n");
+                continue;
+            }
+            $dest = $webroot . '/' . $rel;
 
             if ($downloader->download($url, $dest)) {
                 $assetPathByUrl[$url] = $rel;
@@ -119,8 +128,11 @@ final class ArchiveSite
         // archive is navigable at any deploy domain (the .htaccess serves /aboutus -> index.html).
         // External and query-string links are left absolute.
         $linkResolver = static function (string $abs) use ($crawler): ?string {
-            if (!$crawler->inScope($abs) || !UrlMapper::isArchivablePageUrl($abs)) {
-                return null;
+            if (!$crawler->inScope($abs)) {
+                return null; // external domain -> leave the link as authored
+            }
+            if (!UrlMapper::isArchivablePageUrl($abs)) {
+                return $abs; // in-scope query-string page (not archived) -> keep absolute
             }
             $path = parse_url($abs, PHP_URL_PATH) ?: '/';
             return $path === '/' ? '/' : (rtrim($path, '/') ?: '/');
@@ -131,7 +143,7 @@ final class ArchiveSite
             $html = (string) file_get_contents($file);
             $rewritten = HtmlRewriter::rewrite(
                 $html,
-                $url,
+                UrlMapper::pageBaseUrl($url),
                 fn (string $abs): ?string =>
                     isset($assetPathByUrl[$abs])
                         ? UrlMapper::relativeHref($rel, $assetPathByUrl[$abs])

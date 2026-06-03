@@ -6,28 +6,39 @@ namespace ArchiveSite;
 
 final class HtaccessWriter
 {
+    /** How many ancestor levels the walk-up rules cover (well beyond any realistic site depth). */
+    public const MAX_DEPTH = 15;
+
     public static function contents(): string
     {
-        return <<<'HTACCESS'
-        RewriteEngine On
-        RewriteBase /
+        $lines = [
+            'RewriteEngine On',
+            'RewriteBase /',
+            '',
+            '# 1. Real file or directory -> serve it',
+            'RewriteCond %{REQUEST_FILENAME} -f [OR]',
+            'RewriteCond %{REQUEST_FILENAME} -d',
+            'RewriteRule ^ - [L]',
+            '',
+            '# 2. Serve the index.html of the nearest existing ancestor directory.',
+            '#    Each rule strips one more trailing segment than the last; the first ancestor that',
+            '#    has an index.html wins (nearest ancestor). Loop-free: no restart flag, which would',
+            '#    grow the URI under RewriteBase and trigger a 500 in .htaccess context.',
+        ];
 
-        # 1. Real file or directory -> serve it
-        RewriteCond %{REQUEST_FILENAME} -f [OR]
-        RewriteCond %{REQUEST_FILENAME} -d
-        RewriteRule ^ - [L]
+        for ($depth = 1; $depth <= self::MAX_DEPTH; $depth++) {
+            // Pattern matches a path with $depth trailing segments after the captured ancestor.
+            $tail = str_repeat('/[^/]+', $depth);
+            $lines[] = 'RewriteCond %{DOCUMENT_ROOT}/$1/index.html -f';
+            $lines[] = sprintf('RewriteRule ^(.+)%s/?$ /$1/index.html [L]', $tail);
+        }
 
-        # 2. Current path has an index.html -> serve it (internal rewrite, URL unchanged)
-        RewriteCond %{DOCUMENT_ROOT}/$1/index.html -f
-        RewriteRule ^(.+?)/?[^/]*$ /$1/index.html [L]
+        $lines[] = '';
+        $lines[] = '# 3. No ancestor matched -> serve the root index.html';
+        $lines[] = 'RewriteRule ^ /index.html [L]';
+        $lines[] = '';
 
-        # 3. No index.html here -> strip last segment and re-loop
-        RewriteRule ^(.+)/[^/]+/?$ /$1 [N]
-
-        # 4. Fell through to root -> serve root index.html
-        RewriteRule ^ /index.html [L]
-
-        HTACCESS;
+        return implode("\n", $lines);
     }
 
     public static function write(string $webroot): void

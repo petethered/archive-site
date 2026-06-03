@@ -105,7 +105,7 @@ final class Browser
             clearstatcache(true, $outFile); // filesize() caches stat results; force a fresh read
             $size = is_file($outFile) ? (int) filesize($outFile) : 0;
             if ($size > 0 && $size === $lastSize) {
-                if (++$stableCount >= 2) { // ~0.5s stable
+                if (++$stableCount >= 3) { // ~0.75s stable, guards against a chunked dump
                     $done = true;
                     break;
                 }

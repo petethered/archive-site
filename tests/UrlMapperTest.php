@@ -58,6 +58,25 @@ final class UrlMapperTest extends TestCase
         );
     }
 
+    public function test_page_base_url_uses_directory_for_resolution(): void
+    {
+        // Directory page is served at /blog/, so its resolution base must keep the trailing slash.
+        $this->assertSame('https://x.com/blog/', UrlMapper::pageBaseUrl('https://x.com/blog'));
+        $this->assertSame('https://x.com/blog/', UrlMapper::pageBaseUrl('https://x.com/blog/'));
+        $this->assertSame('https://x.com/', UrlMapper::pageBaseUrl('https://x.com/'));
+        // .html pages live in their parent directory.
+        $this->assertSame('https://x.com/docs/', UrlMapper::pageBaseUrl('https://x.com/docs/guide.html'));
+        $this->assertSame('https://x.com/', UrlMapper::pageBaseUrl('https://x.com/about.html'));
+    }
+
+    public function test_asset_path_cannot_escape_static_via_dotdot(): void
+    {
+        $p = UrlMapper::assetUrlToStaticPath('https://cdn.b.net/../../../etc/passwd');
+        $this->assertStringStartsWith('__static/cdn.b.net/', $p);
+        $this->assertStringNotContainsString('..', $p);
+        $this->assertSame('__static/cdn.b.net/etc/passwd', $p);
+    }
+
     public function test_relative_href_from_nested_page(): void
     {
         $this->assertSame(
