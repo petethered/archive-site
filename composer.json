@@ -1,12 +1,23 @@
 {
     "name": "petethered/archive-site",
-    "description": "Crawl and archive a JS-rendered website into a deployable static site.",
+    "description": "Crawl a JavaScript-rendered website with headless Chrome and write a static copy that works offline and deploys as-is.",
     "type": "project",
+    "license": "MIT",
+    "keywords": ["archive", "crawler", "headless-chrome", "static-site", "web-archiving", "cli"],
+    "homepage": "https://github.com/petethered/archive-site",
+    "authors": [
+        {
+            "name": "Peter Azuolas",
+            "homepage": "https://github.com/petethered"
+        }
+    ],
     "require": {
         "php": ">=8.1",
-        "ext-dom": "*",
         "ext-curl": "*",
-        "ext-json": "*"
+        "ext-dom": "*",
+        "ext-json": "*",
+        "ext-libxml": "*",
+        "ext-mbstring": "*"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.5"
