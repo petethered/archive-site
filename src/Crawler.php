@@ -58,8 +58,11 @@ final class Crawler
         return $scheme . '://' . $host . $port . $path;
     }
 
-    /** Extract in-scope, archivable, normalized, de-duplicated page links from rendered HTML. */
-    public function extractLinks(string $html, string $baseUrl): array
+    /**
+     * Extract in-scope, archivable, normalized, de-duplicated page links from rendered HTML.
+     * In-scope links that cannot be archived (query strings) are reported to $onSkip(url, reason).
+     */
+    public function extractLinks(string $html, string $baseUrl, ?callable $onSkip = null): array
     {
         $dom = new \DOMDocument();
         libxml_use_internal_errors(true);
@@ -71,7 +74,13 @@ final class Crawler
         foreach ($xpath->query('//a[@href]') as $a) {
             /** @var \DOMElement $a */
             $abs = Url::resolve($baseUrl, $a->getAttribute('href'));
-            if ($abs === null || !$this->inScope($abs) || !UrlMapper::isArchivablePageUrl($abs)) {
+            if ($abs === null || !$this->inScope($abs)) {
+                continue;
+            }
+            if (!UrlMapper::isArchivablePageUrl($abs)) {
+                if ($onSkip !== null) {
+                    $onSkip($abs, 'query-string'); // resolve() has already dropped any fragment
+                }
                 continue;
             }
             $norm = $this->normalizePageUrl($abs);
@@ -83,7 +92,8 @@ final class Crawler
     /**
      * BFS from the seed using the Browser. Returns
      * [ 'pages' => [normUrl => html], 'order' => [normUrl,...], 'capped' => bool ].
-     * Records render failures via $onError(url, reason).
+     * Records render failures via $onError(url, reason), and in-scope links that are not
+     * archived (query strings) via $onSkip(url, reason) — once per occurrence; callers dedupe.
      *
      * $onProgress, if given, is called for live feedback:
      *   $onProgress('rendering', ['url' => $url, 'index' => N, 'queued' => Q])  before each render
@@ -95,7 +105,8 @@ final class Crawler
         Browser $browser,
         int $maxPages,
         callable $onError,
-        ?callable $onProgress = null
+        ?callable $onProgress = null,
+        ?callable $onSkip = null
     ): array {
         $progress = $onProgress ?? static function (): void {
         };
@@ -127,7 +138,7 @@ final class Crawler
 
             // Resolve relative links against the page's directory base (/blog/, not /blog).
             $newLinks = 0;
-            foreach ($this->extractLinks($html, UrlMapper::pageBaseUrl($url)) as $link) {
+            foreach ($this->extractLinks($html, UrlMapper::pageBaseUrl($url), $onSkip) as $link) {
                 if (!isset($visited[$link])) {
                     $queue[] = $link;
                     $newLinks++;

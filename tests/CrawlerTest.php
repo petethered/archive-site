@@ -46,4 +46,28 @@ final class CrawlerTest extends TestCase
             'https://example.com/privacy',
         ], $links);
     }
+
+    public function test_extract_links_reports_in_scope_query_links_as_skipped(): void
+    {
+        $html = <<<'HTML'
+        <html><body>
+          <a href="/search?q=faith#top">Search</a>
+          <a href="https://external.com/find?q=x">External search</a>
+          <a href="/privacy">Privacy</a>
+        </body></html>
+        HTML;
+
+        $skipped = [];
+        $c = new Crawler('https://example.com/');
+        $links = $c->extractLinks(
+            $html,
+            'https://example.com/',
+            function (string $url, string $reason) use (&$skipped): void {
+                $skipped[] = [$url, $reason];
+            }
+        );
+
+        $this->assertSame(['https://example.com/privacy'], $links);
+        $this->assertSame([['https://example.com/search?q=faith', 'query-string']], $skipped);
+    }
 }

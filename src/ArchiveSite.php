@@ -41,6 +41,7 @@ final class ArchiveSite
 
         // 2. Crawl (render + discover) ----------------------------------------
         $this->out('[2/6] Crawling & rendering pages (headless Chrome)');
+        $skipped = [];   // url => true, so each skipped link is logged once
         $result = $crawler->crawl(
             $seedUrl,
             $browser,
@@ -60,9 +61,21 @@ final class ArchiveSite
                         $d['queued']
                     ));
                 }
+            },
+            function (string $url, string $reason) use ($manifest, &$skipped): void {
+                if (isset($skipped[$url])) {
+                    return; // the same link usually appears on many pages; record it once
+                }
+                $skipped[$url] = true;
+                $manifest->addSkipped($url, $reason);
+                $this->out('            SKIP (' . $reason . ') ' . $url);
             }
         );
-        $this->out(sprintf('  rendered %d page(s)', count($result['order'])));
+        $this->out(sprintf(
+            '  rendered %d page(s), skipped %d link(s)',
+            count($result['order']),
+            count($skipped)
+        ));
         if ($result['capped']) {
             $this->err('  ! max page cap (' . $this->maxPages . ') reached; finalizing with pages gathered');
         }
