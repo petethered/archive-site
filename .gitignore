@@ -1,2 +1,13 @@
+# Dependencies and tool caches
 /vendor/
 .phpunit.result.cache
+
+# Archive run output. Every run writes <folder>/webroot/ and <folder>/archive.json,
+# so these rules catch an output folder of any name, at any depth (including the root).
+/archives/
+**/webroot/
+**/archive.json
+
+# OS and machine-local editor/agent files
+.DS_Store
+.claude/
