@@ -8,7 +8,8 @@ Chromium binary installed.
 
 Option A — Google Chrome (GUI installer):
 1. Download from https://www.google.com/chrome/ and install to `/Applications`.
-2. The tool auto-detects `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
+2. The tool auto-detects `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+   (and `/Applications/Chromium.app/...` for Chromium).
 
 Option B — Homebrew:
 ```bash
@@ -66,15 +67,25 @@ It applies these flags automatically (you don't pass them):
 
 ## Telling archiveSite where Chrome is
 
-Auto-detection checks these paths in order:
+Auto-detection checks these paths in order and uses the first executable one:
 
 ```
 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+/Applications/Chromium.app/Contents/MacOS/Chromium
 /usr/bin/google-chrome
 /usr/bin/google-chrome-stable
 /usr/bin/chromium
 /usr/bin/chromium-browser
+/snap/bin/chromium
 ```
 
-If your binary lives elsewhere, pass it as the `chromeBinary` constructor
-argument to `ArchiveSite`/`Browser`, or symlink it onto one of these paths.
+If your binary lives elsewhere, set `CHROME_BIN`:
+
+```bash
+CHROME_BIN=/opt/chrome/chrome php archiveSite.php ./archives/example https://example.com
+```
+
+An explicit `CHROME_BIN` must be the path to an executable file (a bare command
+name such as `google-chrome` is not looked up on `PATH`); the run stops with an
+error before creating any output if it is not. The binary in use is printed in
+the run header (`chrome binary : ...`).

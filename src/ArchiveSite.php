@@ -20,8 +20,11 @@ final class ArchiveSite
         $static = $webroot . '/__static';
 
         $crawler = new Crawler($seedUrl);
+        // Resolve Chrome before creating any folders so a missing binary fails fast.
+        $browser = new Browser($this->chromeBinary);
         $this->out('archiveSite — archiving ' . $seedUrl);
         $this->out('  output folder : ' . $folder);
+        $this->out('  chrome binary : ' . $browser->binary());
         $this->out('  scope domain  : ' . Crawler::registrableDomain((string) parse_url($seedUrl, PHP_URL_HOST)));
         $this->out('  max pages     : ' . $this->maxPages);
         $this->out('');
@@ -35,7 +38,6 @@ final class ArchiveSite
 
         $startedAt = gmdate('c');
         $manifest = new Manifest($seedUrl, $startedAt);
-        $browser = new Browser($this->chromeBinary);
 
         // 2. Crawl (render + discover) ----------------------------------------
         $this->out('[2/6] Crawling & rendering pages (headless Chrome)');

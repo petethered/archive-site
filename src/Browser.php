@@ -6,12 +6,17 @@ namespace ArchiveSite;
 
 final class Browser
 {
+    /** Environment variable that overrides auto-detection with an explicit binary path. */
+    public const ENV_VAR = 'CHROME_BIN';
+
     public const DEFAULT_BINARIES = [
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
         '/usr/bin/google-chrome',
         '/usr/bin/google-chrome-stable',
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
+        '/snap/bin/chromium',
     ];
 
     private string $binary;
@@ -21,13 +26,40 @@ final class Browser
         private readonly int $virtualTimeBudgetMs = 8000,
         private readonly int $processTimeoutSeconds = 60,
     ) {
-        $resolved = $chromeBinary ?? self::detectBinary(self::DEFAULT_BINARIES);
-        if ($resolved === null) {
+        $this->binary = self::resolveBinary($chromeBinary, self::DEFAULT_BINARIES);
+    }
+
+    /** The Chrome/Chromium binary this instance launches. */
+    public function binary(): string
+    {
+        return $this->binary;
+    }
+
+    /**
+     * Pick the binary to launch: an explicit override (the CLI passes CHROME_BIN) must exist and
+     * be executable; otherwise the first executable candidate wins.
+     *
+     * @param string[] $candidates
+     * @return string path of the binary to launch
+     * @throws \RuntimeException if the override is unusable or no candidate is executable
+     */
+    public static function resolveBinary(?string $override, array $candidates): string
+    {
+        if ($override !== null && $override !== '') {
+            if (!is_file($override) || !is_executable($override)) {
+                throw new \RuntimeException(
+                    "Chrome binary override is not an executable file: {$override}"
+                );
+            }
+            return $override;
+        }
+        $detected = self::detectBinary($candidates);
+        if ($detected === null) {
             throw new \RuntimeException(
-                "No Chrome/Chromium binary found. See chrome_instructions.md."
+                'No Chrome/Chromium binary found. Set ' . self::ENV_VAR . ' or see chrome_instructions.md.'
             );
         }
-        $this->binary = $resolved;
+        return $detected;
     }
 
     /**
